@@ -6,6 +6,7 @@ STATE_FILE = "/tmp/werewolf/game_state.json"
 
 def save_state(state: Dict[str, Any]):
     """保存游戏状态"""
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 

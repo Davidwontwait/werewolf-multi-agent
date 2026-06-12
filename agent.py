@@ -1,8 +1,9 @@
 import os
 import re
 import random
+import time
 from openai import OpenAI
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # ============================================================
 # 狼人杀策略 Skill（基于 MetaGPT + AgentScope 研究成果）
@@ -131,12 +132,22 @@ WEREWOLF_STRATEGY = """
 
 
 class LLMAgent:
+    # 信息泄露关键词模式（用于检测发言中是否暴露了私有信息）
+    _LEAK_PATTERNS = [
+        r"狼队友",
+        r"我们[昨今]晚杀",
+        r"我[昨今]晚杀了",
+        r"我们狼人",
+        r"我是狼人.*队友",
+    ]
+
     def __init__(self, player_id: int, role: str, role_cn: str):
         self.player_id = player_id
         self.role = role
         self.role_cn = role_cn
         self.private_memory: List[str] = []
         self.reflections: List[str] = []  # 反思记录
+        self.checked_players: List[int] = []  # 预言家已验过的玩家
         
         self.client = OpenAI(
             api_key=os.getenv("DASHSCOPE_API_KEY"),
@@ -154,6 +165,14 @@ class LLMAgent:
             # 只保留最近5条反思
             if len(self.reflections) > 5:
                 self.reflections = self.reflections[-5:]
+    
+    def _sanitize_speech(self, text: str) -> str:
+        """检测并过滤发言中可能泄露私有信息的内容"""
+        for pattern in self._LEAK_PATTERNS:
+            if re.search(pattern, text):
+                # 替换为安全的通用发言
+                return f"我觉得目前局势还不太明朗，大家需要仔细分析每个人的发言。"
+        return text
     
     def _get_role_specific_instruction(self) -> str:
         """根据角色生成专属指令"""
@@ -229,20 +248,25 @@ class LLMAgent:
 - 不要泄露私有信息
 - 发言要有逻辑链条：总结昨晚 → 分析前面发言 → 给出判断 → 表明投票意向"""
     
-    def chat(self, system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
-        try:
-            response = self.client.chat.completions.create(
-                model="qwen-plus",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.7,
-                max_tokens=max_tokens
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            return f"[LLM 错误: {e}]"
+    def chat(self, system_prompt: str, user_message: str, max_tokens: int = 300, max_retries: int = 2) -> str:
+        """调用 LLM，支持自动重试"""
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model="qwen-plus",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=0.7,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                if attempt < max_retries:
+                    time.sleep(1 * (attempt + 1))  # 递增等待
+                    continue
+                return f"[LLM 错误: {e}]"
     
     def reflect(self, public_log: List[str], event: str):
         """反思当前局势（MetaGPT 风格）"""
@@ -276,6 +300,8 @@ class LLMAgent:
         response = self.chat(system_prompt, prompt)
         pattern = rf'^{self.player_id}号[：:]\s*'
         response = re.sub(pattern, '', response)
+        # 过滤可能泄露私有信息的发言
+        response = self._sanitize_speech(response)
         return response
     
     def vote(self, public_log: List[str], death_info: str, speeches: List[str], alive_players: List[int]) -> int:
@@ -325,7 +351,16 @@ class LLMAgent:
     def seer_check(self, public_log: List[str], alive_players: List[int]) -> int:
         system_prompt = self._build_system_prompt(public_log)
         
+        # 排除已验过的玩家
+        unchecked = [p for p in alive_players if p != self.player_id and p not in self.checked_players]
+        if not unchecked:
+            # 所有人都验过了，从存活玩家中重新选（排除自己）
+            unchecked = [p for p in alive_players if p != self.player_id]
+        
         context = f"存活玩家：{alive_players}\n"
+        if self.checked_players:
+            context += f"你已经验过的玩家（不要重复验）：{self.checked_players}\n"
+        context += f"可选查验目标：{unchecked}\n"
         context += "策略：优先验中间位置（4-6号）或发言可疑的人"
         
         prompt = f"""现在是预言家查验阶段。
@@ -337,11 +372,13 @@ class LLMAgent:
         match = re.search(r'\d+', response)
         if match:
             check_target = int(match.group())
-            if check_target in alive_players and check_target != self.player_id:
+            if check_target in unchecked:
+                self.checked_players.append(check_target)
                 return check_target
         
-        targets = [p for p in alive_players if p != self.player_id]
-        return random.choice(targets) if targets else 1
+        target = random.choice(unchecked) if unchecked else random.choice([p for p in alive_players if p != self.player_id])
+        self.checked_players.append(target)
+        return target
     
     def witch_save(self, public_log: List[str], killed_player: int, is_first_night: bool) -> bool:
         system_prompt = self._build_system_prompt(public_log)
