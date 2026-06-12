@@ -174,6 +174,8 @@ class GameRunner:
         """运行夜晚阶段"""
         self.state["night_kills"] = []
         self.state["poison_kills"] = []
+        self.state["phase"] = "night"
+        save_state(self.state)
         self.run_wolf_step()
     
     def run_wolf_step(self):
@@ -207,10 +209,11 @@ class GameRunner:
                 # 告诉所有狼人杀了谁
                 for wid in wolves:
                     if not self.state["players"][str(wid)]["is_human"]:
-                        agent = self.get_player(wid).agent
-                        agent.add_private_memory(f"第{round_num}晚，狼队杀了{kill_target}号")
-                        self._sync_player_to_state(self.get_player(wid))
+                        player = self.get_player(wid)
+                        player.agent.add_private_memory(f"第{round_num}晚，狼队杀了{kill_target}号")
+                        self._sync_player_to_state(player)
         
+        save_state(self.state)
         self.run_seer_step()
     
     def run_seer_step(self):
@@ -222,17 +225,18 @@ class GameRunner:
         if seer:
             seer_id = int(seer[0])
             if not self.state["players"][str(seer_id)]["is_human"] or self.auto_mode:
-                seer_agent = self.get_player(seer_id).agent
+                seer_player = self.get_player(seer_id)
                 alive_players = self.get_alive_players()
-                check_target = seer_agent.seer_check(self.state["public_log"], alive_players)
+                check_target = seer_player.agent.seer_check(self.state["public_log"], alive_players)
                 
                 # 查验结果
                 is_wolf = self.state["players"][str(check_target)]["role"] == "wolf"
                 result = "狼人" if is_wolf else "好人"
                 
-                seer_agent.add_private_memory(f"第{round_num}晚，你查验了{check_target}号，结果是{result}")
-                self._sync_player_to_state(self.get_player(seer_id))
+                seer_player.agent.add_private_memory(f"第{round_num}晚，你查验了{check_target}号，结果是{result}")
+                self._sync_player_to_state(seer_player)
         
+        save_state(self.state)
         self.run_witch_step()
     
     def run_witch_step(self):
@@ -244,29 +248,30 @@ class GameRunner:
         if witch:
             witch_id = int(witch[0])
             if not self.state["players"][str(witch_id)]["is_human"] or self.auto_mode:
-                witch_agent = self.get_player(witch_id).agent
+                witch_player = self.get_player(witch_id)
                 
                 # 解药
                 if not self.state["witch_antidote_used"] and self.state["night_kills"]:
                     killed = self.state["night_kills"][0]
                     is_first_night = (round_num == 1)
-                    if witch_agent.witch_save(self.state["public_log"], killed, is_first_night):
+                    if witch_player.agent.witch_save(self.state["public_log"], killed, is_first_night):
                         self.state["night_kills"].remove(killed)
                         self.state["witch_antidote_used"] = True
-                        witch_agent.add_private_memory(f"第{round_num}晚，你用解药救了{killed}号")
-                        self._sync_player_to_state(self.get_player(witch_id))
+                        witch_player.agent.add_private_memory(f"第{round_num}晚，你用解药救了{killed}号")
+                        self._sync_player_to_state(witch_player)
                 
                 # 毒药（女巫每晚只能用一瓶药，用了解药就不能用毒药）
                 elif not self.state["witch_poison_used"]:
                     alive_players = self.get_alive_players()
-                    poison_target = witch_agent.witch_poison(self.state["public_log"], alive_players)
+                    poison_target = witch_player.agent.witch_poison(self.state["public_log"], alive_players)
                     if poison_target > 0:
                         self.state["night_kills"].append(poison_target)
                         self.state["poison_kills"].append(poison_target)
                         self.state["witch_poison_used"] = True
-                        witch_agent.add_private_memory(f"第{round_num}晚，你用毒药毒了{poison_target}号")
-                        self._sync_player_to_state(self.get_player(witch_id))
+                        witch_player.agent.add_private_memory(f"第{round_num}晚，你用毒药毒了{poison_target}号")
+                        self._sync_player_to_state(witch_player)
         
+        save_state(self.state)
         self.run_hunter_step()
     
     def run_hunter_step(self):
@@ -328,10 +333,19 @@ class GameRunner:
         
         # 确定发言顺序
         if self.state["night_kills"]:
-            # 非平安夜，从死者左边开始
+            # 非平安夜，从死者右边第一个存活玩家开始（座位环形）
             first_dead = min(self.state["night_kills"])
-            start_idx = alive.index(first_dead) if first_dead in alive else 0
-            speech_order = alive[start_idx:] + alive[:start_idx]
+            total = GAME_CONFIG["total_players"]
+            # 从死者的下一个座位号开始，环形查找第一个存活玩家
+            speech_order = []
+            for offset in range(1, total + 1):
+                next_id = (first_dead - 1 + offset) % total + 1  # 1-based 环形
+                if next_id in alive:
+                    start_idx = alive.index(next_id)
+                    speech_order = alive[start_idx:] + alive[:start_idx]
+                    break
+            if not speech_order:
+                speech_order = alive
         else:
             # 平安夜，随机起点
             start = random.choice(alive)
@@ -449,6 +463,17 @@ class GameRunner:
                         shoot_role = self.state["players"][str(shoot_target)]["role"]
                         vote_results.append(f"🔫 猎人{out_player}号发动技能，带走了{shoot_target}号")
                         self.add_public_log(f"猎人{out_player}号带走了{shoot_target}号")
+                    else:
+                        # 人类猎人需要选择开枪目标
+                        result_msg = "🗳️ **投票结果**\n" + "\n".join(vote_results)
+                        self.send_feishu(result_msg)
+                        alive_after_vote = self.get_alive_players()
+                        self.state["waiting_for_human"] = True
+                        self.state["pending_action"] = "hunter_shoot"
+                        self.state["human_question"] = f"你（猎人{out_player}号）被投票出局了！你要带走几号？\n存活目标：{alive_after_vote}\n回复数字（例如：3）"
+                        self.send_feishu(f"🔫 **{self.state['human_question']}**")
+                        save_state(self.state)
+                        return
             else:
                 vote_results.append("⚖️ 平票，无人出局")
         
@@ -474,8 +499,6 @@ class GameRunner:
         
         # 进入下一轮
         self.state["round"] += 1
-        self.state["night_kills"] = []
-        self.state["poison_kills"] = []
         save_state(self.state)
         self.run_night_phase()
     
@@ -511,9 +534,9 @@ class GameRunner:
             wolves = self.get_wolves()
             for wid in wolves:
                 if not self.state["players"][str(wid)]["is_human"]:
-                    agent = self.get_player(wid).agent
-                    agent.add_private_memory(f"第{self.state['round']}晚，狼队杀了{kill_target}号")
-                    self._sync_player_to_state(self.get_player(wid))
+                    player = self.get_player(wid)
+                    player.agent.add_private_memory(f"第{self.state['round']}晚，狼队杀了{kill_target}号")
+                    self._sync_player_to_state(player)
             
             self.state["waiting_for_human"] = False
             self.run_seer_step()
@@ -571,16 +594,28 @@ class GameRunner:
                 # 猎人被投票出局可以开枪（不是被毒杀）
                 if role == "hunter":
                     hunter_player = self.get_player(out_player)
-                    alive_after_vote = self.get_alive_players()
-                    if alive_after_vote:
-                        shoot_target = hunter_player.agent.hunter_shoot(
-                            self.state["public_log"],
-                            alive_after_vote,
-                            "被投票出局"
-                        )
-                        self.state["players"][str(shoot_target)]["alive"] = False
-                        vote_results.append(f"🔫 猎人{out_player}号发动技能，带走了{shoot_target}号")
-                        self.add_public_log(f"猎人{out_player}号带走了{shoot_target}号")
+                    if not hunter_player.is_human or self.auto_mode:
+                        alive_after_vote = self.get_alive_players()
+                        if alive_after_vote:
+                            shoot_target = hunter_player.agent.hunter_shoot(
+                                self.state["public_log"],
+                                alive_after_vote,
+                                "被投票出局"
+                            )
+                            self.state["players"][str(shoot_target)]["alive"] = False
+                            vote_results.append(f"🔫 猎人{out_player}号发动技能，带走了{shoot_target}号")
+                            self.add_public_log(f"猎人{out_player}号带走了{shoot_target}号")
+                    else:
+                        # 人类猎人需要选择开枪目标
+                        result_msg = "🗳️ **投票结果**\n" + "\n".join(vote_results)
+                        self.send_feishu(result_msg)
+                        alive_after_vote = self.get_alive_players()
+                        self.state["waiting_for_human"] = True
+                        self.state["pending_action"] = "hunter_shoot"
+                        self.state["human_question"] = f"你（猎人{out_player}号）被投票出局了！你要带走几号？\n存活目标：{alive_after_vote}\n回复数字（例如：3）"
+                        self.send_feishu(f"🔫 **{self.state['human_question']}**")
+                        save_state(self.state)
+                        return
             else:
                 vote_results.append("⚖️ 平票，无人出局")
             
@@ -605,8 +640,47 @@ class GameRunner:
                 return
             
             self.state["round"] += 1
-            self.state["night_kills"] = []
-            self.state["poison_kills"] = []
+            self.run_night_phase()
+        
+        elif pending_action == "hunter_shoot":
+            # 人类猎人选择开枪目标
+            match = re.search(r'\d+', response)
+            shoot_target = int(match.group()) if match else None
+            alive = self.get_alive_players()
+            
+            if shoot_target and shoot_target in alive:
+                self.state["players"][str(shoot_target)]["alive"] = False
+                self.send_feishu(f"🔫 猎人发动技能，带走了{shoot_target}号")
+                self.add_public_log(f"猎人{human_id}号带走了{shoot_target}号")
+            else:
+                # 无效目标，随机选一个
+                if alive:
+                    shoot_target = random.choice(alive)
+                    self.state["players"][str(shoot_target)]["alive"] = False
+                    self.send_feishu(f"🔫 猎人发动技能，带走了{shoot_target}号")
+                    self.add_public_log(f"猎人{human_id}号带走了{shoot_target}号")
+            
+            self.state["waiting_for_human"] = False
+            
+            # 反思本轮
+            round_num = self.state["round"]
+            alive_after = self.get_alive_players()
+            for pid in alive_after:
+                player = self.get_player(pid)
+                if not player.is_human:
+                    player.agent.reflect(
+                        self.state["public_log"],
+                        f"第{round_num}天猎人开枪带走了{shoot_target}号"
+                    )
+                    self._sync_player_to_state(player)
+            
+            winner = self.is_game_over()
+            if winner:
+                self.end_game(winner)
+                return
+            
+            self.state["round"] += 1
+            save_state(self.state)
             self.run_night_phase()
 
 def main():
