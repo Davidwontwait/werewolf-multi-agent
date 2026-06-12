@@ -140,6 +140,15 @@ class LLMAgent:
         r"我们狼人",
         r"我是狼人.*队友",
     ]
+    
+    # 安全替换发言（轮换使用，避免重复暴露异常）
+    _SAFE_SPEECHES = [
+        "我觉得目前局势还不太明朗，大家需要仔细分析每个人的发言。",
+        "我暂时没有确切的信息，但我认为我们应该理性分析每个人的行为逻辑。",
+        "目前形势比较复杂，我建议大家结合前几轮的信息综合判断。",
+        "我认为我们需要更多信息才能做出准确判断，先听听其他人的看法。",
+        "从目前的发言来看，有些人的逻辑确实存在矛盾，大家注意甄别。",
+    ]
 
     def __init__(self, player_id: int, role: str, role_cn: str):
         self.player_id = player_id
@@ -170,8 +179,8 @@ class LLMAgent:
         """检测并过滤发言中可能泄露私有信息的内容"""
         for pattern in self._LEAK_PATTERNS:
             if re.search(pattern, text):
-                # 替换为安全的通用发言
-                return f"我觉得目前局势还不太明朗，大家需要仔细分析每个人的发言。"
+                # 替换为安全的通用发言（轮换使用）
+                return random.choice(self._SAFE_SPEECHES)
         return text
     
     def _get_role_specific_instruction(self) -> str:
@@ -266,7 +275,7 @@ class LLMAgent:
                 if attempt < max_retries:
                     time.sleep(1 * (attempt + 1))  # 递增等待
                     continue
-                return f"[LLM 错误: {e}]"
+                return ""  # 返回空字符串而非错误信息，避免泄露到公开日志
     
     def reflect(self, public_log: List[str], event: str):
         """反思当前局势（MetaGPT 风格）"""
@@ -298,6 +307,9 @@ class LLMAgent:
 请发表你的发言（2-3句话，不要重复自己的编号，直接说内容）："""
         
         response = self.chat(system_prompt, prompt)
+        # LLM 失败或返回空时，使用安全发言
+        if not response:
+            return random.choice(self._SAFE_SPEECHES)
         pattern = rf'^{self.player_id}号[：:]\s*'
         response = re.sub(pattern, '', response)
         # 过滤可能泄露私有信息的发言
