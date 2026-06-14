@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>狼人杀本地对局</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>狼人杀本地对局</h1>
+          <div id="statusLine" class="status-line">载入中</div>
+        </div>
+        <div class="top-actions">
+          <button id="refreshBtn" type="button" title="刷新">↻</button>
+          <button id="newGameBtn" type="button">新局</button>
+        </div>
+      </header>
+
+      <section class="start-band" id="startBand">
+        <label>
+          <span>玩家编号</span>
+          <select id="playerSelect">
+            <option value="random">随机</option>
+            <option value="1">1号</option>
+            <option value="2">2号</option>
+            <option value="3">3号</option>
+            <option value="4">4号</option>
+            <option value="5">5号</option>
+            <option value="6">6号</option>
+            <option value="7">7号</option>
+            <option value="8">8号</option>
+            <option value="9">9号</option>
+          </select>
+        </label>
+        <label class="switch-row">
+          <input id="autoMode" type="checkbox" />
+          <span>全自动</span>
+        </label>
+        <button id="startBtn" type="button">开始</button>
+      </section>
+
+      <section class="board-grid">
+        <aside class="panel players-panel">
+          <div class="panel-title">玩家</div>
+          <div id="playersGrid" class="players-grid"></div>
+        </aside>
+
+        <section class="panel log-panel">
+          <div class="panel-title">公开进程</div>
+          <div id="logList" class="log-list"></div>
+        </section>
+
+        <aside class="panel action-panel">
+          <div class="panel-title">当前行动</div>
+          <div id="actionBox" class="action-box"></div>
+          <div id="messagesBox" class="messages-box"></div>
+        </aside>
+      </section>
+    </main>
+
+    <div id="busyOverlay" class="busy-overlay" hidden>
+      <div class="spinner"></div>
+      <div>模型正在行动</div>
+    </div>
+
+    <script src="/web/app.js"></script>
+  </body>
+</html>
