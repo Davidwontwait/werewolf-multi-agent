@@ -11,4 +11,6 @@ build/
 .env
 *.log
 game_state.json
+local-game-state.json
+web_game_state.json
 .DS_Store

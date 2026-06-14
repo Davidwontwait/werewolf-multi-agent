@@ -1,8 +1,10 @@
 import json
 import os
 from typing import Dict, Any, Optional
+from pathlib import Path
 
-STATE_FILE = "/tmp/werewolf/game_state.json"
+DEFAULT_STATE_DIR = Path(os.getenv("WEREWOLF_STATE_DIR", Path.home() / ".werewolf"))
+STATE_FILE = os.getenv("WEREWOLF_STATE_FILE", str(DEFAULT_STATE_DIR / "game_state.json"))
 
 def save_state(state: Dict[str, Any]):
     """保存游戏状态"""
